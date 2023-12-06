@@ -10,15 +10,15 @@ img_ori = cv2.imread('car1.jpg')
 height, width, channel = img_ori.shape
 
 ##이미지의 높이, 너비, 채널 확인 / 그레이로 색변경하여 확인
-# plt.figure(figsize=(12, 10))
-# plt.imshow(img_ori,cmap='gray')
-# print(height, width, channel)
-# plt.show()  # 높이 576, 너비 960, 채널 3
+plt.figure(figsize=(12, 10))
+plt.imshow(img_ori,cmap='gray')
+print(height, width, channel)
+# # plt.show()  # 높이 576, 너비 960, 채널 3
 
 # 이미지 그레이로 변경
 gray = cv2.cvtColor(img_ori, cv2.COLOR_BGR2GRAY)
-# plt.figure(figsize=(12,10))
-# plt.imshow(gray, cmap='gray')
+plt.figure(figsize=(12,10))
+plt.imshow(gray, cmap='gray')
 # plt.show()
 
 ##가우시안블러 처리 코드
@@ -49,8 +49,8 @@ temp_result = np.zeros((height,width,channel), dtype=np.uint8)
 
 cv2.drawContours(temp_result, contours=contours, contourIdx=-1, color=(255,255,255))
 
-# plt.figure(figsize=(12, 10))
-# plt.imshow(temp_result)
+plt.figure(figsize=(12, 10))
+plt.imshow(temp_result)
 # plt.show()
 
 ##원본사진의 컨투어스를 사각형으로 만들어 전처리
@@ -71,8 +71,8 @@ for contour in contours:
         'cx' : x + (w / 2),
         'cy' : y + (h / 2)
     })
-# plt.figure(figsize=(12,10))
-# plt.imshow(temp_result, cmap='gray')
+plt.figure(figsize=(12,10))
+plt.imshow(temp_result, cmap='gray')
 # plt.show()
 
 ## 컨투어스들중 번호판부분의 사각형을 찾아내는 코드
@@ -179,5 +179,124 @@ for r in matched_result:
 
 plt.figure(figsize=(12, 10))
 plt.imshow(temp_result, cmap='gray')
+# plt.show()
+
+#####################################################################
+PLATE_WIDTH_PADDING = 1.3  # 1.3
+PLATE_HEIGHT_PADDING = 1.5  # 1.5
+MIN_PLATE_RATIO = 3
+MAX_PLATE_RATIO = 10
+
+plate_imgs = []
+plate_infos = []
+
+for i, matched_chars in enumerate(matched_result):
+    sorted_chars = sorted(matched_chars, key=lambda x: x['cx'])
+
+    plate_cx = (sorted_chars[0]['cx'] + sorted_chars[-1]['cx']) / 2
+    plate_cy = (sorted_chars[0]['cy'] + sorted_chars[-1]['cy']) / 2
+
+    plate_width = (sorted_chars[-1]['x'] + sorted_chars[-1]['w'] - sorted_chars[0]['x']) * PLATE_WIDTH_PADDING
+
+    sum_height = 0
+    for d in sorted_chars:
+        sum_height += d['h']
+
+    plate_height = int(sum_height / len(sorted_chars) * PLATE_HEIGHT_PADDING)
+
+    triangle_height = sorted_chars[-1]['cy'] - sorted_chars[0]['cy']
+    triangle_hypotenus = np.linalg.norm(
+        np.array([sorted_chars[0]['cx'], sorted_chars[0]['cy']]) -
+        np.array([sorted_chars[-1]['cx'], sorted_chars[-1]['cy']])
+    )
+
+    angle = np.degrees(np.arcsin(triangle_height / triangle_hypotenus))
+
+    rotation_matrix = cv2.getRotationMatrix2D(center=(plate_cx, plate_cy), angle=angle, scale=1.0)
+
+    img_rotated = cv2.warpAffine(img_blur_thresh, M=rotation_matrix, dsize=(width, height))
+
+    img_cropped = cv2.getRectSubPix(
+        img_rotated,
+        patchSize=(int(plate_width), int(plate_height)),
+        center=(int(plate_cx), int(plate_cy))
+    )
+
+    if img_cropped.shape[1] / img_cropped.shape[0] < MIN_PLATE_RATIO or img_cropped.shape[1] / img_cropped.shape[
+        0] < MIN_PLATE_RATIO > MAX_PLATE_RATIO:
+        continue
+
+    plate_imgs.append(img_cropped)
+    plate_infos.append({
+        'x': int(plate_cx - plate_width / 2),
+        'y': int(plate_cy - plate_height / 2),
+        'w': int(plate_width),
+        'h': int(plate_height)
+    })
+
+    plt.subplot(len(matched_result), 1, i + 1)
+    plt.imshow(img_cropped, cmap='gray')
+    plt.show()
+#-----------------------------------------------------------#
+longest_idx, longest_text = -1, 0
+plate_chars = []
+
+for i, plate_img in enumerate(plate_imgs):
+    plate_img = cv2.resize(plate_img, dsize=(0, 0), fx=1.6, fy=1.6)
+    _, plate_img = cv2.threshold(plate_img, thresh=0.0, maxval=255.0, type=cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+
+    # find contours again (same as above)
+    contours, _ = cv2.findContours(plate_img, mode=cv2.RETR_LIST, method=cv2.CHAIN_APPROX_SIMPLE)
+
+    plate_min_x, plate_min_y = plate_img.shape[1], plate_img.shape[0]
+    plate_max_x, plate_max_y = 0, 0
+
+    for contour in contours:
+        x, y, w, h = cv2.boundingRect(contour)
+
+        area = w * h
+        ratio = w / h
+
+        if area > MIN_AREA \
+                and w > MIN_WIDTH and h > MIN_HEIGHT \
+                and MIN_RATIO < ratio < MAX_RATIO:
+            if x < plate_min_x:
+                plate_min_x = x
+            if y < plate_min_y:
+                plate_min_y = y
+            if x + w > plate_max_x:
+                plate_max_x = x + w
+            if y + h > plate_max_y:
+                plate_max_y = y + h
+
+    img_result = plate_img[plate_min_y:plate_max_y, plate_min_x:plate_max_x]
+
+img_result = cv2.GaussianBlur(img_result, ksize=(3, 3), sigmaX=0)
+_, img_result = cv2.threshold(img_result, thresh=0.0, maxval=255.0, type=cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+img_result = cv2.copyMakeBorder(img_result, top=10, bottom=10, left=10, right=10, borderType=cv2.BORDER_CONSTANT,
+                                value=(0, 0, 0))
+
+pytesseract.pytesseract.tesseract_cmd = ('D:\car_plate_with_openCV/tesseract.exe'
+                                         ''
+                                         '')
+chars = pytesseract.image_to_string(img_result, lang='kor', config='--psm 7 --oem 0')
+
+result_chars = ''
+has_digit = False
+for c in chars:
+    if ord('가') <= ord(c) <= ord('힣') or c.isdigit():
+        if c.isdigit():
+            has_digit = True
+        result_chars += c
+
+print(result_chars)
+plate_chars.append(result_chars)
+
+if has_digit and len(result_chars) > longest_text:
+    longest_idx = i
+
+plt.subplot(len(plate_imgs), 1, i + 1)
+plt.imshow(img_result, cmap='gray')
+
 plt.show()
 
